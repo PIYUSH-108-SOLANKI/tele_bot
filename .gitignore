@@ -1,0 +1,26 @@
+# Environment files
+.env
+.env.*
+.env*.local
+!.env.example
+
+# Python virtual environment
+.venv/
+venv/
+ENV/
+
+# Databases & local state
+*.db
+*.sqlite*
+*.backup*
+sent.db*
+chat_memory.db*
+
+# Python cache & test cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# OS metadata
+.DS_Store
+Thumbs.db
