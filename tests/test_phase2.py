@@ -11,10 +11,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from graph import (
+    check_required_env,
     compiled_graph,
+    create_mcp_client,
     extract_tool_result_text,
     fetch_news_node,
     filter_new_node,
+    is_successful_status,
     parse_articles_json,
     route_after_fetch,
     route_after_filter,
@@ -406,4 +409,71 @@ def test_compiled_graph_structure():
     assert "filter_new" in nodes
     assert "summarize" in nodes
     assert "send" in nodes
+
+
+# ============================================================================
+# Tests for MCP Environment Forwarding & CI Preflight Checks
+# ============================================================================
+
+def test_create_mcp_client_forwards_env(monkeypatch):
+    """create_mcp_client forwards TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to child process env."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "mock_bot_token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "mock_chat_id")
+
+    client = create_mcp_client()
+    config = client.connections.get("news_server", {})
+    assert "env" in config
+    assert config["env"]["TELEGRAM_BOT_TOKEN"] == "mock_bot_token"
+    assert config["env"]["TELEGRAM_CHAT_ID"] == "mock_chat_id"
+
+
+def test_create_mcp_client_without_env(monkeypatch):
+    """create_mcp_client gracefully handles unset environment variables without crashing."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    client = create_mcp_client()
+    config = client.connections.get("news_server", {})
+    assert "env" not in config or not config["env"]
+
+
+def test_check_required_env(monkeypatch, capsys):
+    """check_required_env logs only SET/MISSING and returns True when all vars are present."""
+    monkeypatch.setenv("GOOGLE_API_KEY", "mock_key")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "mock_token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "mock_chat")
+
+    assert check_required_env() is True
+    captured = capsys.readouterr().out
+    assert "GOOGLE_API_KEY: SET" in captured
+    assert "TELEGRAM_BOT_TOKEN: SET" in captured
+    assert "TELEGRAM_CHAT_ID: SET" in captured
+    # Ensure sensitive values are NEVER printed
+    assert "mock_key" not in captured
+    assert "mock_token" not in captured
+    assert "mock_chat" not in captured
+
+
+def test_check_required_env_missing(monkeypatch, capsys):
+    """check_required_env returns False if any required environment variable is missing."""
+    monkeypatch.setenv("GOOGLE_API_KEY", "mock_key")
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "mock_chat")
+
+    assert check_required_env() is False
+    captured = capsys.readouterr().out
+    assert "TELEGRAM_BOT_TOKEN: MISSING" in captured
+
+
+def test_is_successful_status():
+    """is_successful_status returns True for successful/clean terminal states, False for failures."""
+    assert is_successful_status("Successfully sent digest (1 chunk) and recorded 5 URLs") is True
+    assert is_successful_status("No new stories") is True
+    assert is_successful_status("Nothing to send.") is True
+
+    assert is_successful_status("Telegram delivery failed: Missing credentials") is False
+    assert is_successful_status("Error: Fetch news tool failed") is False
+    assert is_successful_status("Sent error alert to Telegram") is False
+    assert is_successful_status("") is False
+
 

@@ -236,14 +236,30 @@ def sanitize_telegram_html(raw_html: str, valid_urls: Optional[set] = None) -> s
 
 
 def create_mcp_client(server_script: Optional[str] = None) -> MultiServerMCPClient:
-    """Create a MultiServerMCPClient pointing to server.py via stdio."""
+    """
+    Create a MultiServerMCPClient pointing to server.py via stdio.
+    Explicitly forwards TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to the child MCP process.
+    """
     script_path = server_script or SERVER_SCRIPT_PATH
+
+    env_vars: Dict[str, str] = {}
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if bot_token:
+        env_vars["TELEGRAM_BOT_TOKEN"] = bot_token
+    if chat_id:
+        env_vars["TELEGRAM_CHAT_ID"] = chat_id
+
+    connection_config: Dict[str, Any] = {
+        "command": sys.executable,
+        "args": [os.path.abspath(script_path)],
+        "transport": "stdio",
+    }
+    if env_vars:
+        connection_config["env"] = env_vars
+
     return MultiServerMCPClient({
-        "news_server": {
-            "command": sys.executable,
-            "args": [os.path.abspath(script_path)],
-            "transport": "stdio",
-        }
+        "news_server": connection_config
     })
 
 
@@ -572,13 +588,52 @@ compiled_graph = build_graph().compile()
 
 
 # ============================================================================
-# Standalone Execution Entrypoint (DO NOT RUN IN PHASE 2)
+# Standalone Execution Entrypoint
 # ============================================================================
 
+def check_required_env() -> bool:
+    """
+    Safe preflight check verifying required environment variables are present.
+    Logs ONLY 'SET' or 'MISSING' without revealing actual values.
+    Returns True if all required variables are present, False otherwise.
+    """
+    required_vars = ["GOOGLE_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
+    all_present = True
+    print("Preflight environment check:")
+    for var in required_vars:
+        is_set = bool(os.environ.get(var))
+        status_label = "SET" if is_set else "MISSING"
+        print(f"  {var}: {status_label}")
+        if not is_set:
+            all_present = False
+    return all_present
+
+
+def is_successful_status(status: str) -> bool:
+    """
+    Check if the workflow finished with a successful terminal status.
+    Returns True for successful delivery or clean exit when no new stories exist.
+    """
+    if not status:
+        return False
+    if status.startswith("Successfully sent digest"):
+        return True
+    if status == "No new stories":
+        return True
+    if status == "Nothing to send.":
+        return True
+    return False
+
+
 async def main():
-    """Manual execution entrypoint for future phases."""
+    """Execution entrypoint for scheduled or manual workflow runs."""
     from dotenv import load_dotenv
     load_dotenv()
+
+    # Preflight check: ensure required environment variables are set
+    if not check_required_env():
+        print("Error: Missing required environment variables. Aborting.")
+        sys.exit(1)
 
     print("Executing tech-news-mcp workflow...")
     initial_state: NewsState = {
@@ -588,7 +643,13 @@ async def main():
         "status": "Starting workflow",
     }
     result = await compiled_graph.ainvoke(initial_state)
-    print("Workflow finished. Final status:", result.get("status"))
+    final_status = result.get("status", "")
+    print("Workflow finished. Final status:", final_status)
+
+    # Check for delivery failure or error to fail CI cleanly
+    if not is_successful_status(final_status):
+        print(f"Workflow failed with status: {final_status}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
